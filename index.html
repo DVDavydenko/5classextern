@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Семестрове інтерактивне завдання v2.0 — 5 клас, ІІ семестр</title>
+  <title>Семестрове інтерактивне завдання v1.2 — 5 клас, ІІ семестр</title>
   <style>
     :root{
       --bg:#0d1726;--bg2:#132845;--paper:#f7fafc;--text:#1f2937;--muted:#6b7280;
@@ -392,11 +392,14 @@
           <div class="metric"><div class="label">Клас</div><div class="value" id="final-class"></div></div>
           <div class="metric"><div class="label">Автоматично набрано</div><div class="value" id="auto-score"></div></div>
           <div class="metric"><div class="label">Тривалість роботи</div><div class="value" id="spent-time"></div></div>
+          <div class="metric"><div class="label">Автооцінка відкритої відповіді</div><div class="value" id="open-auto-score"></div></div>
+          <div class="metric"><div class="label">Попередній підсумок</div><div class="value" id="prelim-total"></div></div>
         </div>
 
         <p style="line-height:1.7">
-          Дякуємо за старанність і уважність. Закриті завдання перевірено автоматично.
+          Дякуємо за старанність і уважність. Закриті завдання перевірено автоматично. Відкрите питання також отримало попередню автоматичну оцінку.
         </p>
+        <div class="info" style="margin-top:14px"><h3>Статус надсилання</h3><div id="send-status-text">Підготовка до надсилання…</div></div>
 
         <div class="answers-table">
           <div class="answer-row answer-head">
@@ -406,8 +409,6 @@
           </div>
           <div id="answers-review"></div>
         </div>
-
-        <div id="submit-status" class="compass-note" style="margin-top:18px;display:none"></div>
 
         <div class="btn-row">
           <button class="btn-secondary" id="print-btn">Друкувати / зберегти як PDF</button>
@@ -420,31 +421,102 @@
   </div>
 
 <script>
+
 const APP_CONFIG = {
   gasUrl: "https://script.google.com/macros/s/AKfycbyEIzfCshLT3LRgSRYEfxvyDXuzuozTCYl48o3bG065Tabu85lkgiLnyS7nCjhyaOMsQA/exec",
-  enableSubmit: true,
-  version: "v2.0"
+  appVersion: "v2.1-final",
+  autoScoreMax: 10,
+  openScoreMax: 2
 };
 
-function safeJsonParse(text){
-  try { return JSON.parse(text); } catch(e){ return null; }
+function normalizeText(s){
+  return String(s || "").toLowerCase().replace(/['’`"]/g, "").replace(/\s+/g, " ").trim();
 }
 
-async function submitResultsToGas(payload){
-  if(!APP_CONFIG.enableSubmit || !APP_CONFIG.gasUrl || APP_CONFIG.gasUrl.includes("PASTE_YOUR_GAS_WEB_APP_URL_HERE")){
-    return { ok:false, skipped:true, message:"GAS URL не вказано." };
+function scoreOpenAnswer(answer){
+  const text = normalizeText(answer);
+  if(!text || text.length < 12){
+    return {score:0, reason:"Порожня або надто коротка відповідь", hits:[]};
   }
-  const response = await fetch(APP_CONFIG.gasUrl, {
-    method:"POST",
-    headers:{ "Content-Type":"text/plain;charset=utf-8" },
-    body: JSON.stringify(payload)
-  });
-  const text = await response.text();
-  const data = safeJsonParse(text);
-  if(!response.ok){
-    throw new Error(data && data.error ? data.error : ("HTTP " + response.status));
+  const groups = [
+    {name:"історія/минуле/пам'ять", keywords:["істор", "минул", "памят", "пам'ят", "поді", "досвід"]},
+    {name:"родина/предки/корені", keywords:["родин", "сім", "предк", "корен", "рід", "родов"]},
+    {name:"народ/україна", keywords:["народ", "україн", "держав", "країн"]},
+    {name:"уроки/майбутнє/розуміння", keywords:["майбут", "виснов", "урок", "щоб", "розум", "цінув", "помил"]}
+  ];
+  const hits = [];
+  for(const group of groups){
+    if(group.keywords.some(k => text.includes(k))) hits.push(group.name);
   }
-  return data || { ok:true };
+  let score = 0;
+  if(text.length >= 20 && hits.length >= 2) score = 1;
+  if(text.length >= 40 && hits.length >= 3) score = 2;
+  return {
+    score: score,
+    reason: score === 2 ? "Відповідь достатньо повна" : (score === 1 ? "Відповідь частково розкриває зміст" : "Відповідь слабко розкриває зміст"),
+    hits: hits
+  };
+}
+
+function answerStatusText(q, ans){
+  if(q.type === 'single_choice'){
+    if(ans === undefined) return 'немає';
+    return ans === q.correct ? 'правильно' : 'неправильно';
+  }
+  if(q.type === 'matching'){
+    if(!ans) return 'немає';
+    return q.items.every((item, idx) => ans[idx] === item.correct) ? 'правильно' : 'неправильно';
+  }
+  if(q.type === 'sequence'){
+    if(!ans) return 'немає';
+    return q.items.every((item, idx) => ans[idx] === item.correct) ? 'правильно' : 'неправильно';
+  }
+  if(q.type === 'open') return 'відкрита відповідь';
+  return '';
+}
+
+function buildSubmissionPayload(autoClosedScore, openResult){
+  return {
+    submittedAt: new Date().toISOString(),
+    appVersion: APP_CONFIG.appVersion,
+    studentName: state.studentName,
+    studentClass: state.studentClass,
+    durationMinutes: 40,
+    spentTime: spentTimeString(),
+    remainingSeconds: state.remainingSeconds,
+    autoClosedScore: autoClosedScore,
+    autoClosedMax: APP_CONFIG.autoScoreMax,
+    openAutoScore: openResult.score,
+    openAutoMax: APP_CONFIG.openScoreMax,
+    totalPreliminaryScore: Number((autoClosedScore + openResult.score).toFixed(2)),
+    openEvaluationReason: openResult.reason,
+    openEvaluationHits: openResult.hits,
+    answers: questions.map(q => ({
+      id: q.id,
+      type: q.type,
+      block: q.block,
+      title: q.title,
+      answer: state.answers[q.id] ?? null,
+      status: answerStatusText(q, state.answers[q.id])
+    }))
+  };
+}
+
+async function sendResultsToGAS(payload){
+  if(!APP_CONFIG.gasUrl) return {ok:false, error:"GAS URL не задано"};
+  try{
+    const res = await fetch(APP_CONFIG.gasUrl, {
+      method: "POST",
+      headers: {"Content-Type":"text/plain;charset=utf-8"},
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch(e){ data = {raw:text}; }
+    return {ok: res.ok, status: res.status, data: data};
+  }catch(err){
+    return {ok:false, error:String(err)};
+  }
 }
 
 const questions = [
@@ -504,6 +576,9 @@ const autoScore=document.getElementById('auto-score');
 const spentTime=document.getElementById('spent-time');
 const finalGreeting=document.getElementById('final-greeting');
 const answersReview=document.getElementById('answers-review');
+const openAutoScoreEl=document.getElementById('open-auto-score');
+const prelimTotalEl=document.getElementById('prelim-total');
+const sendStatusText=document.getElementById('send-status-text');
 
 function formatTime(sec){const m=Math.floor(sec/60), s=sec%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')}
 function spentTimeString(){const total=40*60-state.remainingSeconds; const m=Math.floor(total/60), s=total%60; return m+' хв '+String(s).padStart(2,'0')+' с'}
@@ -623,9 +698,13 @@ async function finishTest(byTime){
   if(state.finished) return;
   state.finished=true; clearInterval(state.timerId);
   const auto=calculateAutoScore();
+  const openResult = scoreOpenAnswer(state.answers[15] || "");
+  const preliminaryTotal = Number((auto + openResult.score).toFixed(2));
   finalStudent.textContent=state.studentName;
   finalClass.textContent=state.studentClass;
   autoScore.textContent=`${auto} / 10`;
+  openAutoScoreEl.textContent=`${openResult.score} / 2`;
+  prelimTotalEl.textContent=`${preliminaryTotal} / 12`;
   spentTime.textContent=spentTimeString();
   finalGreeting.textContent=byTime?'Час виконання завершився.':'Ти успішно завершив(ла) роботу.';
   answersReview.innerHTML='';
@@ -635,43 +714,13 @@ async function finishTest(byTime){
     answersReview.appendChild(row);
   });
   showScreen('final');
-
-  const submitStatus = document.getElementById('submit-status');
-  submitStatus.style.display = 'block';
-  submitStatus.textContent = 'Надсилання результатів...';
-
-  const payload = {
-    appVersion: APP_CONFIG.version,
-    submittedAt: new Date().toISOString(),
-    studentName: state.studentName,
-    studentClass: state.studentClass,
-    spentTime: spentTimeString(),
-    timeLimitMinutes: 40,
-    autoScoreClosed: auto,
-    maxClosedScore: 10,
-    maxFullScore: 12,
-    answers: state.answers,
-    questionsMeta: questions.map(q => ({ id:q.id, type:q.type, block:q.block, title:q.title, points:q.points || 0 }))
-  };
-
-  try{
-    const result = await submitResultsToGas(payload);
-    if(result && result.ok){
-      let msg = 'Результати надіслано.';
-      if(typeof result.openAutoScore !== 'undefined'){
-        msg += ` Автооценка відкритої відповіді: ${result.openAutoScore} / 2.`;
-      }
-      if(typeof result.preliminaryTotal !== 'undefined'){
-        msg += ` Попередній підсумок: ${result.preliminaryTotal} / 12.`;
-      }
-      submitStatus.textContent = msg;
-    } else if(result && result.skipped){
-      submitStatus.textContent = 'Режим підготовки: GAS URL ще не підключено.';
-    } else {
-      submitStatus.textContent = 'Результати не вдалося надіслати.';
-    }
-  }catch(err){
-    submitStatus.textContent = 'Помилка надсилання: ' + err.message;
+  sendStatusText.textContent = 'Надсилаю результати…';
+  const payload = buildSubmissionPayload(auto, openResult);
+  const sendResult = await sendResultsToGAS(payload);
+  if(sendResult.ok){
+    sendStatusText.textContent = 'Результати успішно надіслано.';
+  } else {
+    sendStatusText.textContent = 'Не вдалося надіслати результати. Збережіть сторінку як PDF.';
   }
 }
 
